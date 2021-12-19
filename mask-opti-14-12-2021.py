@@ -8,12 +8,12 @@ import cvutils
 import pandas as pd
 
 # params
-image_path = './assets/coq_mix_v2.jpg'
+image_path = './assets/coq_mix.jpg'
 title_window = 'Window'
 
 # initial values
-min_hsv = (0, 20, 0)
-max_hsv = (225, 255, 250)
+min_hsv = (0, 0, 0)
+max_hsv = (230, 250, 250)
 
 # find the blue ruler and measure its lengh in pixel in order to measure other objects
 def calibrate_ruler(hsv_image):
@@ -66,6 +66,9 @@ def treat_image(hsv_image, min_hsv, max_hsv, lenunit):
 
     # grab contours
     contours, _ = cv2.findContours(tresh_img, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+    # create an empty image for the contours
+    contours_img = np.zeros(object_image.shape)
     
     # We will make the contours go through a series of selection in order to only output the relevant ones, that most likerely correspond to an object
 
@@ -73,13 +76,14 @@ def treat_image(hsv_image, min_hsv, max_hsv, lenunit):
     # contour: contour object
     # circle: ((x, y), center)
     # lengh: lengh of the thing
-    # state: NOISE, GOOD or BAD for now
+    # state: Bool good of bad to take
     contours_df = pd.DataFrame(columns=['contour', 'circle', 'lengh', 'state'])
 
     # populate the dataframe with the contours at least
     contours_df = contours_df.append([{'contour': contours[i], 'circle': None, 'lengh': None, 'state': None} for i in range(len(contours))], ignore_index=True)
 
     # array for the contours that don't make it to the selection step
+    incorrect_contours = []
     correct_contours = []
 
     # Eliminate the objects of an insignificant size
@@ -91,66 +95,42 @@ def treat_image(hsv_image, min_hsv, max_hsv, lenunit):
         radius = int(radius)
 
         # drop it from the df if its an insignificant size
-        if radius < lenunit/3:
-            row['state'] = 'NOISE'
+        if radius < lenunit/4:
+            incorrect_contours.append(contour)
+            contours_df.drop(index)
         else:
             lengh = 10*radius*2/lenunit # in cm
             row['circle'] = (center, radius)
             row['lengh'] = lengh # for now the lengh is just the radius
 
-            if lengh >= 10.2:
-                row['state'] = 'GOOD'
-            else:
-                row['state'] = 'BAD'
-    
-    # save the dataframe 
-    contours_df.to_pickle('contours_df.pkl')
+    # for each decently big, measure its lengh, display it and draw its contour in green/red depending on if it's the right size or not
+    for object in correct_contours_n_circles:
+        # take the minimum enclosing circle for the contour
+        (min_x, min_y), min_radius = cv2.minEnclosingCircle(contour)
+        min_center = (int(min_x),int(min_y))
+        min_radius = int(min_radius)
+        cv2.circle(contours_img, min_center, min_radius,(0,0,255),2)
 
-    # display the last mask
-    cv2.imshow('Mask', mask)
-
-    draw_output(contours_df)
-
-def draw_output(contours_df):
-    # create an empty image for the contours
-    contours_img = np.zeros(object_image.shape)
-    rendr_img = object_image.copy()
-
-    for index, row in contours_df[contours_df['state'] != 'NOISE'].iterrows():
-        contour = row['contour']
-        center = row['circle'][0]
-        radius = row['circle'][1]
-        lengh = row['lengh']
-        state = row['state']
-
-        #draw the circle
-        cv2.circle(contours_img, center, radius, (0,0,255), 2)
-
-        lengh_text = str(round(lengh, 1)) + ' cm'
-        cv2.putText(contours_img, lengh_text, center, cv2.FONT_HERSHEY_SIMPLEX, 1, (209, 80, 0, 255), 3)
-        cv2.putText(rendr_img, lengh_text, center, cv2.FONT_HERSHEY_SIMPLEX, 1, (209, 80, 0, 255), 3)
+        lengh = 10*min_radius*2/lenunit # in cm
+        lengh = round(lengh, 1)
+        lengh_text = str(lengh) + ' cm'
+        cv2.putText(contours_img, lengh_text, min_center, cv2.FONT_HERSHEY_SIMPLEX, 1, (209, 80, 0, 255), 3)
 
         # write a if the coquille is good or not
-        x, y = center
+        x, y = min_center
         y += 35
-
-        if state == 'GOOD':
+        if lengh >= 10.2:
             cv2.putText(contours_img, 'GOOD', (x, y), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0, 255), 4)
-            cv2.putText(rendr_img, 'GOOD', (x, y), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0, 255), 4)
             cv2.drawContours(image=contours_img, contours=contour, contourIdx=-1, color=(0, 255, 0), thickness=3, lineType=cv2.LINE_AA)
-        elif state == 'BAD':
+        else:
             cv2.putText(contours_img, 'BAD', (x, y), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255, 255), 4)
-            cv2.putText(rendr_img, 'BAD', (x, y), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255, 255), 4)
             cv2.drawContours(image=contours_img, contours=contour, contourIdx=-1, color=(0, 0, 255), thickness=3, lineType=cv2.LINE_AA)
-        elif state == 'NOISE':
-            pass
-            # cv2.drawContours(image=contours_img, contours=contour, contourIdx=-1, color=(255, 255, 255), thickness=3, lineType=cv2.LINE_AA)
 
-    print('Nombre de coquilles valides: ' + str(len(contours_df[contours_df['state'] == 'GOOD'])))
-    print('Nombre de coquilles invalides: ' + str(len(contours_df[contours_df['state'] == 'BAD'])))
+    # draw the rest of the small/noisy contours in white
+    # cv2.drawContours(image=contours_img, contours=incorrect_contours, contourIdx=-1, color=(255, 255, 255), thickness=3, lineType=cv2.LINE_AA)
 
+    cv2.imshow('Mask', mask)
     cv2.imshow('contours', contours_img)
-    cv2.imshow('object image', rendr_img)
 
 def on_trackbar(val):
     min_hue = cv2.getTrackbarPos('Min hue:', title_window)
@@ -162,6 +142,9 @@ def on_trackbar(val):
 
     treat_image(hsv, (min_hue, min_saturation, min_value), (max_hue, max_saturation, max_value), unitlenpxl)
 
+
+
+
 if __name__ == '__main__':
     # open a window and pop trackbars
     cv2.namedWindow(title_window, cv2.WINDOW_FULLSCREEN)
@@ -171,11 +154,11 @@ if __name__ == '__main__':
     cv2.createTrackbar('Max saturation:', title_window , 0, 255, on_trackbar)
     cv2.createTrackbar('Min value:', title_window , 0, 255, on_trackbar)
     cv2.createTrackbar('Max value:', title_window , 0, 255, on_trackbar)
-    
+
     # read the image
     object_image = cv2.imread(image_path)
     object_image = imutils.resize(object_image, width=1200)
-    # cv2.imshow('object image', object_image)
+    cv2.imshow('object image', object_image)
 
     # convert to hsv
     hsv = cv2.cvtColor(object_image, cv2.COLOR_BGR2HSV)
