@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import sys
 import imutils
 from numpy.core.fromnumeric import trace
-import cvutils
+import helper
 import pandas as pd
 
 # params
@@ -71,20 +71,18 @@ def treat_image(hsv_image, min_hsv, max_hsv, lenunit):
 
     # This dataframe will hold all the data for the contours that went through the selection steps
     # contour: contour object
-    # circle: ((x, y), center)
+    # center: (x, y)
+    # radius: radius of the circle in pixels
     # lengh: lengh of the thing
     # state: NOISE, GOOD or BAD for now
-    contours_df = pd.DataFrame(columns=['contour', 'circle', 'lengh', 'state'])
+    contours_df = pd.DataFrame(columns=['contour', 'center', 'radius', 'lengh', 'state'])
 
     # populate the dataframe with the contours at least
-    contours_df = contours_df.append([{'contour': contours[i], 'circle': None, 'lengh': None, 'state': None} for i in range(len(contours))], ignore_index=True)
-
-    # array for the contours that don't make it to the selection step
-    correct_contours = []
+    contours_df = contours_df.append([{'contour': contours[i], 'center': None, 'radius':None, 'lengh': None, 'state': None} for i in range(len(contours))], ignore_index=True)
 
     # Eliminate the objects of an insignificant size
     for index, row in contours_df.iterrows():
-        contour = row['contour']
+        contour = row.contour
 
         (x, y), radius = cv2.minEnclosingCircle(contour)
         center = (int(x),int(y))
@@ -92,17 +90,41 @@ def treat_image(hsv_image, min_hsv, max_hsv, lenunit):
 
         # drop it from the df if its an insignificant size
         if radius < lenunit/3:
-            row['state'] = 'NOISE'
+            row.state = 'NOISE'
         else:
             lengh = 10*radius*2/lenunit # in cm
-            row['circle'] = (center, radius)
-            row['lengh'] = lengh # for now the lengh is just the radius
+            row.center = center
+            row.radius = radius
+            row.lengh = lengh # for now the lengh is just the radius
 
             if lengh >= 10.2:
-                row['state'] = 'GOOD'
+                row.state = 'GOOD'
             else:
-                row['state'] = 'BAD'
+                row.state = 'BAD'
     
+    # Eliminate the contour that is irresobably big that takes the whole picture
+    biggestrow = contours_df.sort_values(by='lengh', ascending=False).iloc[0]
+    max_lengh = biggestrow.lengh
+    contours_df.loc[contours_df.lengh==max_lengh, 'state'] = 'NOISE'
+
+    # Eliminate circles that are inside another circle
+    not_noise = contours_df[contours_df.state!='NOISE']
+
+    for index1, row1 in not_noise.iterrows():
+        for index2, row2 in not_noise.iterrows():
+
+            # escape the case where both rows are the same, because a circle is always inside of itself
+            if index1==index2:
+                continue
+            
+            dist = helper.distance(row1.center, row2.center)
+            max_radius, min_radius = max(row1.radius, row2.radius), min(row1.radius, row2.radius)
+
+            if dist < max_radius:
+                # then the little circle is inside, the big one, so we can just convert the small one to noise
+                contours_df.loc[contours_df.radius==min_radius, 'state'] = 'NOISE'
+                
+
     # save the dataframe 
     contours_df.to_pickle('contours_df.pkl')
 
@@ -117,11 +139,11 @@ def draw_output(contours_df):
     rendr_img = object_image.copy()
 
     for index, row in contours_df[contours_df['state'] != 'NOISE'].iterrows():
-        contour = row['contour']
-        center = row['circle'][0]
-        radius = row['circle'][1]
-        lengh = row['lengh']
-        state = row['state']
+        contour = row.contour
+        center = row.center
+        radius = row.radius
+        lengh = row.lengh
+        state = row.state
 
         #draw the circle
         cv2.circle(contours_img, center, radius, (0,0,255), 2)
